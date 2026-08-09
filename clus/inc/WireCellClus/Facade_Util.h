@@ -11,6 +11,7 @@
 #include "WireCellUtil/Units.h"
 #include "WireCellUtil/Spdlog.h"
 #include "WireCellUtil/Graph.h"
+#include "WireCellUtil/MultiArray.h"
 // #include "WireCellUtil/D2Vector.h"
 #include "WireCellIface/IAnodePlane.h"
 #include "WireCellIface/IAnodeFace.h"
@@ -18,12 +19,42 @@
 
 #include "WCPQuickhull/QuickHull.h"
 
+#include <cstddef>
+#include <memory>
+#include <string>
+#include <vector>
+
 // extern int global_counter_get_closest_wcpoint;
 
 
 // using namespace WireCell;  NO!  do not open up namespaces in header files!
 
 namespace WireCell::PointCloud::Facade {
+
+    /// One named, owning float32 array in the reconstruction output contract.
+    /// The indirection keeps the underlying boost::multi_array at a stable
+    /// address while RecoArrays grows in legacy serializer order.
+    struct RecoArray {
+        using array_type = boost::multi_array<float, 2>;
+
+        std::string name;
+        std::unique_ptr<array_type> array;
+
+        RecoArray(const std::string& name, size_t nrows, size_t ncols);
+        RecoArray(RecoArray&&) noexcept = default;
+        RecoArray& operator=(RecoArray&&) noexcept = default;
+        RecoArray(const RecoArray&) = delete;
+        RecoArray& operator=(const RecoArray&) = delete;
+    };
+
+    /// The ordered, owning result of the historical reconstruction-array
+    /// construction.  Entries are CTPC arrays first (in local_pcs() traversal
+    /// order), followed by blobs, points and ppedges.
+    struct RecoArrays {
+        std::vector<RecoArray> arrays;
+
+        RecoArray::array_type& append(const std::string& name, size_t nrows, size_t ncols);
+    };
 
     struct DummyCache{};
 
@@ -634,6 +665,7 @@ namespace WireCell::PointCloud::Facade {
         return false;
     }
 
+    RecoArrays make_reco_arrays(const Grouping& grouping);
     void grouping2file(const Grouping& grouping, const std::string& filename);
 
 }  // namespace WireCell::PointCloud::Facade

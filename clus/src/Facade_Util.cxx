@@ -626,18 +626,25 @@ static void arr2file(const boost::multi_array<float, 2>& arr, const std::string&
     m_out.flush();
 }
 
-void Facade::grouping2file(const Grouping& grouping, const std::string& filename)
+Facade::RecoArray::RecoArray(const std::string& name, size_t nrows, size_t ncols)
+    : name(name)
+    , array(std::make_unique<array_type>(boost::extents[nrows][ncols]))
+{
+}
+
+Facade::RecoArray::array_type& Facade::RecoArrays::append(const std::string& name, size_t nrows, size_t ncols)
+{
+    arrays.emplace_back(name, nrows, ncols);
+    return *arrays.back().array;
+}
+
+Facade::RecoArrays Facade::make_reco_arrays(const Grouping& grouping)
 {
 
-    typedef boost::multi_array<float, 2> MultiArray;
+    typedef RecoArray::array_type MultiArray;
     // ctpc: x, y, charge, charge_err, cident, wind, slice_index
 
-    using ostream_t = boost::iostreams::filtering_ostream;
-    ostream_t m_out;
-    custard::output_filters(m_out, filename);
-    if (m_out.empty()) {
-        raise<ValueError>("ten2file: unsupported outname: %s", filename.c_str());
-    }
+    RecoArrays ret;
 
     const auto& gpcs = grouping.node()->value.local_pcs();
     std::regex ctpc_name_pattern("^ctpc_f([0-9]+)p([0-9]+)$");
@@ -654,7 +661,7 @@ void Facade::grouping2file(const Grouping& grouping, const std::string& filename
         // std::cout << " face_idx " << face_idx << " plane_idx " << plane_idx << std::endl;
 
         size_t npts = pc.size_major();
-        MultiArray actpc(boost::extents[npts][7]);
+        MultiArray& actpc = ret.append(name, npts, 7);
         const auto& x = pc.get("x")->elements<double>();
         const auto& y = pc.get("y")->elements<double>();
         const auto& charge = pc.get("charge")->elements<double>();
@@ -671,14 +678,13 @@ void Facade::grouping2file(const Grouping& grouping, const std::string& filename
             actpc[i][5] = wind[i];
             actpc[i][6] = slice_index[i];
         }
-        arr2file(actpc, name, m_out);
     }
     size_t nblobs = 0;
     for (const auto& cluster : grouping.children()) {
         nblobs += cluster->children().size();
     }
     // q, ncorners, corner0_x, corner0_y, corner0_z, ... corner11_z [max 12 corners, 36 columns]
-    MultiArray ablobs(boost::extents[nblobs][38]);
+    MultiArray& ablobs = ret.append("blobs", nblobs, 38);
     int gbidx = 0;
     std::unordered_map<const Blob*, int> b2idx;
     for (const auto& cluster : grouping.children()) {
@@ -707,9 +713,9 @@ void Facade::grouping2file(const Grouping& grouping, const std::string& filename
     }
 
     // x, y, z, q, bidx, cidx
-    MultiArray apoints(boost::extents[npoints][6]);
+    MultiArray& apoints = ret.append("points", npoints, 6);
     // head node, tail node, weight
-    MultiArray aedges(boost::extents[nedges][3]);
+    MultiArray& aedges = ret.append("ppedges", nedges, 3);
 
     // global point index
     int gcidx = 0;
@@ -749,11 +755,23 @@ void Facade::grouping2file(const Grouping& grouping, const std::string& filename
         gcidx += 1;
     }
 
-    arr2file(ablobs, "blobs", m_out);
-    arr2file(apoints, "points", m_out);
-    arr2file(aedges, "ppedges", m_out);
-    m_out.pop();
+    return ret;
+}
 
+void Facade::grouping2file(const Grouping& grouping, const std::string& filename)
+{
+    using ostream_t = boost::iostreams::filtering_ostream;
+    ostream_t m_out;
+    custard::output_filters(m_out, filename);
+    if (m_out.empty()) {
+        raise<ValueError>("ten2file: unsupported outname: %s", filename.c_str());
+    }
+
+    const auto arrays = make_reco_arrays(grouping);
+    for (const auto& named : arrays.arrays) {
+        arr2file(*named.array, named.name, m_out);
+    }
+    m_out.pop();
 }
 
 // Local Variables:
