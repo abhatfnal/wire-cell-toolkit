@@ -159,6 +159,16 @@ namespace WireCell::Clus {
         // BEFORE the Bee fills, so the Bee per-blob labels and the saved pctree
         // carry the same ids.
         void restamp_real_cluster_id(Facade::Grouping& grouping) const;
+        // Stamp the coarse flash-bundle id into every cluster's perblob PC
+        // BEFORE the PR visitor loop starts.  Each cluster that already has a
+        // "perblob" PC receives a new "matching_bundle_id" column where every
+        // row holds the cluster's current ident() value (the coarse bundle id
+        // assigned after QL matching).  Clusters without a "perblob" PC are
+        // left untouched; they receive the homogenize fill-in at save time.
+        // Called once per grouping immediately before THE MAIN LOOP so the
+        // value is carved correctly by ClusteringUnmergeBundle::carve() which
+        // uses Dataset::subset(rows) to copy ALL columns automatically.
+        void stamp_matching_bundle_id(Facade::Grouping& grouping) const;
         void fill_bee_points(const std::string& name, const Facade::Grouping& grouping);
         void fill_bee_points_from_cluster(
             Bee::Points& bpts, const Facade::Cluster& cluster,
@@ -646,6 +656,14 @@ namespace WireCell::Clus {
         // that is off -- i.e. every detector but SBND.  Set false only to
         // reproduce the two-epoch values for A/B archaeology.
         bool m_real_cluster_id_global{true};
+        // stamp_matching_bundle_id (default false = byte-identical legacy tarball):
+        // write a "matching_bundle_id" perblob column on every cluster that has
+        // a "perblob" PC, immediately before the PR visitor loop.  The value is
+        // the cluster's current ident() -- the coarse Q/L-matched flash-bundle
+        // id that would otherwise be lost when ClusteringUnmergeBundle splits the
+        // merged cluster into its constituent segments.  Default off so other
+        // detectors and the all-APA stage are byte-identical.
+        bool m_stamp_matching_bundle_id{false};
         // save_assoc_cluster_id (default false = byte-identical legacy tarball):
         // the same homogenization for the isolated grouping's provenance pair
         // "assoc_cluster_id" / "assoc_cluster_main" (doc 52 Stage 1/2), written

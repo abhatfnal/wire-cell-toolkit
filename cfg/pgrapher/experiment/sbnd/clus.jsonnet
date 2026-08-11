@@ -1912,6 +1912,14 @@ function(output_dir='.', runNo=0, subRunNo=0, eventNo=0, rse_from_ident=false, r
               // the DL SCN prediction to accept a candidate vertex.  Threaded
               // for configurability (docs/pr/2 sec 7.4); null keeps the C++
               // default, which is coupled to the uBooNE-trained net (gap G3).
+              // stamp_matching_bundle_id (default false = byte-identical legacy
+              // tarball): write the coarse Q/L flash-bundle ident into every
+              // cluster's perblob PC before the PR visitor loop.  Required for
+              // NuGraph4 training-data preparation so the coarse bundle
+              // membership survives ClusteringUnmergeBundle.  OFF by default so
+              // production and other detectors are byte-identical; enable in
+              // the NuGraph4 preparation job only.
+              stamp_matching_bundle_id=false,
               // fast_xgb_forest: book the two XGB BDT combiners with
               // TmvaGradForest instead of TMVA::Reader -- same scores, ~4 s
               // and ~0.9 GB less per PR job (sbnd_xin/docs/76 round 2).
@@ -2780,6 +2788,7 @@ function(output_dir='.', runNo=0, subRunNo=0, eventNo=0, rse_from_ident=false, r
                     },
                 ],
                 pipeline: wc.tns(cm_pipeline),
+                [if stamp_matching_bundle_id then 'stamp_matching_bundle_id']: true,
             },
         }, nin=1, nout=1, uses=anodes + [dv, pcts] + cm_pipeline + tagger_uses),
         local sink = g.pnode({
