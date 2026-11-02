@@ -2388,6 +2388,13 @@ function(output_dir='.', runNo=0, subRunNo=0, eventNo=0, rse_from_ident=false, r
        // way; this only books them.  C++ default false; key omitted when off
        // => byte-identical pre-knob config AND tracking-pr.root.
        root_particle_links=true,  // SBND PRODUCTION -- doc sbnd_xin/128 sec 10.1
+       // stamp_matching_bundle_id (default false = byte-identical legacy tarball):
+       // write the coarse Q/L flash-bundle ident into every cluster's perblob PC
+       // before the PR visitor loop.  Required for NuGraph4 training-data preparation
+       // so the coarse bundle membership survives ClusteringUnmergeBundle.  OFF by
+       // default so production and other detectors are byte-identical; enable in
+       // the NuGraph4 preparation job only.
+       stamp_matching_bundle_id=false,
        provenance_extra={}):: {
         // Only gate when the caller actually supplied a window; beam_window=[0,0]
         // (the arg default, i.e. "no beam window") must not silently drop every
@@ -3349,6 +3356,7 @@ function(output_dir='.', runNo=0, subRunNo=0, eventNo=0, rse_from_ident=false, r
                     },
                 ],
                 pipeline: wc.tns(cm_pipeline),
+                [if stamp_matching_bundle_id then 'stamp_matching_bundle_id']: true,
             },
         }, nin=1, nout=1, uses=anodes + [dv, pcts] + cm_pipeline + tagger_uses
                                + (if dl_vtx_dump then [sce_field_fwd] else [])),   // ai-helper issue 35

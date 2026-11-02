@@ -2356,15 +2356,94 @@ bool PatternAlgorithms::singlephoton_tagger(
     double    max_ok_energy = 0;
     std::set<ShowerPtr> good_showers, ok_showers;
 
-    auto mv_it = map_vertex_to_shower.find(main_vertex);
-    if (mv_it == map_vertex_to_shower.end()) return false;
+    // Fix 2-v2 (feature/sbnd-singlephoton-onehop-20261005):
+    // Graph-adjacent shower fallback — two stages:
+    //   Stage 1 (direct): showers in map_vertex_to_shower[main_vertex].
+    //     If any direct shower is usable (pdg==11, en>20MeV, passes badreco1),
+    //     behave exactly as baseline — no neighbor search.
+    //   Stage 2 (neighbor fallback, only when Stage 1 insufficient):
+    //     Inspect ALL incident graph edges, regardless of edge topology type.
+    //     For each neighboring vertex V1, add any showers keyed to V1.
+    //     This recovers conversion-gap topologies where the photon shower's
+    //     start_vertex is V1 (the far endpoint of the gap edge), not main_vertex,
+    //     regardless of whether the gap edge is track-like or shower-like.
+    //     No global vertex scan, no distance threshold.
+    std::set<ShowerPtr> candidate_showers;
+    {
+        auto mv_it = map_vertex_to_shower.find(main_vertex);
+        if (mv_it != map_vertex_to_shower.end())
+            candidate_showers.insert(mv_it->second.begin(), mv_it->second.end());
+
+        SPDLOG_LOGGER_DEBUG(s_log,
+            "fix2_v2: main_vtx_deg={} map_size={} all_showers={} n_direct={}",
+            (int)boost::out_degree(main_vertex->get_descriptor(), graph),
+            (int)map_vertex_to_shower.size(),
+            (int)showers.size(),
+            (int)candidate_showers.size());
+
+        // Log each direct shower's PDG and energy (diagnostic for evt_0054 etc.).
+        for (ShowerPtr shw : candidate_showers) {
+            SegmentPtr sg0 = shw->start_segment();
+            int p0 = (sg0 && sg0->has_particle_info()) ? sg0->particle_info()->pdg() : 0;
+            SPDLOG_LOGGER_DEBUG(s_log, "fix2_v2: direct shw E={:.1f}MeV pdg={}",
+                                shower_energy(shw) / units::MeV, p0);
+        }
+
+        // "Usable" quick-check: mirrors first-pass conditions (lines 2495, 2536, 2537).
+        // If any direct shower passes pdg==11 && en>20MeV && badreco1, the direct
+        // path is sufficient — preserve baseline behavior unchanged.
+        bool direct_has_usable = false;
+        for (ShowerPtr shw : candidate_showers) {
+            SegmentPtr sg0 = shw->start_segment();
+            if (!sg0 || !sg0->has_particle_info()) continue;
+            if (sg0->particle_info()->pdg() != 11) continue;
+            if (shower_energy(shw) <= 20 * units::MeV) continue;
+            TaggerInfo tmp_ti_chk{};
+            if (bad_reconstruction_sp(ctx, shw, tmp_ti_chk)) continue; // badreco1 failed
+            direct_has_usable = true;
+            break;
+        }
+        SPDLOG_LOGGER_DEBUG(s_log, "fix2_v2: direct_has_usable={}", direct_has_usable);
+
+        if (!direct_has_usable) {
+            // Neighbor fallback: traverse ALL incident edges (track-like and shower-like).
+            int n_edges = 0, n_neighbor_new = 0;
+            for (auto eit : sorted_out_edges(main_vertex->get_descriptor(), graph)) {
+                SegmentPtr gap_seg = graph[eit].segment;
+                ++n_edges;
+                if (!gap_seg) continue;
+                const bool edge_is_shw = seg_is_shower(gap_seg);
+                VertexPtr v1 = find_other_vertex(graph, gap_seg, main_vertex);
+                if (!v1) continue;
+                auto v1_it = map_vertex_to_shower.find(v1);
+                if (v1_it == map_vertex_to_shower.end()) continue;
+                for (ShowerPtr shw : v1_it->second) {
+                    bool is_new = candidate_showers.insert(shw).second;
+                    if (is_new) {
+                        ++n_neighbor_new;
+                        SegmentPtr sg0 = shw->start_segment();
+                        int p0 = (sg0 && sg0->has_particle_info())
+                                 ? sg0->particle_info()->pdg() : 0;
+                        SPDLOG_LOGGER_DEBUG(s_log,
+                            "fix2_v2: neighbor shw E={:.1f}MeV pdg={} edge_is_shw={} v1_idx={}",
+                            shower_energy(shw) / units::MeV, p0, edge_is_shw,
+                            v1->get_graph_index());
+                    }
+                }
+            }
+            SPDLOG_LOGGER_DEBUG(s_log,
+                "fix2_v2: fallback n_edges={} n_neighbor_new={} total_candidates={}",
+                n_edges, n_neighbor_new, (int)candidate_showers.size());
+        }
+    }
+    if (candidate_showers.empty()) return false;
 
     flag_sp = true;  // tentatively true; will be cleared on cuts
 
     bool flag_single_shower =
         (boost::out_degree(main_vertex->get_descriptor(), graph) == 1);
 
-    for (ShowerPtr shower : mv_it->second) {
+    for (ShowerPtr shower : candidate_showers) {
         SegmentPtr sg = shower->start_segment();
         if (!sg) continue;
 

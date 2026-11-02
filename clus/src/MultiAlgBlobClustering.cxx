@@ -291,6 +291,7 @@ void MultiAlgBlobClustering::configure(const WireCell::Configuration& cfg)
     m_save_real_cluster_id = get(cfg, "save_real_cluster_id", m_save_real_cluster_id);
     m_save_assoc_cluster_id = get(cfg, "save_assoc_cluster_id", m_save_assoc_cluster_id);
     m_real_cluster_id_global = get(cfg, "real_cluster_id_global", m_real_cluster_id_global);
+    m_stamp_matching_bundle_id = get(cfg, "stamp_matching_bundle_id", m_stamp_matching_bundle_id);
     m_dead_area_version = get(cfg, "dead_area_version", m_dead_area_version);
 
     m_save_opflash = get(cfg, "save_opflash", m_save_opflash);
@@ -917,6 +918,41 @@ void MultiAlgBlobClustering::restamp_real_cluster_id(Grouping& grouping) const
     if (nstamped) {
         log->debug("real_cluster_id_global: re-stamped {} cluster(s) into one epoch, "
                    "ids 1..{}", nstamped, next - 1);
+    }
+}
+
+// stamp_matching_bundle_id: record the coarse flash-bundle ident into every
+// cluster that already has a "perblob" PC, immediately before the PR visitor
+// loop.  The value is the cluster's current ident() -- at this point each
+// cluster IS one Q/L flash bundle (one ident == one bundle), so this encodes
+// the coarse bundle membership that ClusteringUnmergeBundle would otherwise
+// lose.  ClusteringUnmergeBundle::carve() calls Dataset::subset(rows) which
+// copies ALL perblob columns automatically, so no change to the carve path is
+// needed.
+//
+// Clusters that do NOT have a "perblob" PC at this point (e.g. clusters from
+// the dead grouping, or clusters that were never through examine_bundles) are
+// left untouched.  The homogenize loop at save time fills in a sentinel value
+// (-1) for those clusters so Dataset::append does not throw on the key mismatch.
+//
+// Row ordering: row i == children()[i] (the standard perblob invariant); since
+// every blob in the cluster belongs to the SAME bundle, the entire row vector
+// is filled with the same constant value.
+void MultiAlgBlobClustering::stamp_matching_bundle_id(Grouping& grouping) const
+{
+    size_t nstamped = 0;
+    for (Cluster* cluster : grouping.children()) {
+        auto& lpcs = cluster->value().local_pcs();
+        if (lpcs.find("perblob") == lpcs.end()) continue;
+        const size_t nb = cluster->nchildren();
+        if (nb == 0) continue;
+        cluster->put_pcarray(std::vector<int>(nb, cluster->ident()),
+                             "matching_bundle_id", "perblob");
+        ++nstamped;
+    }
+    if (nstamped) {
+        log->debug("stamp_matching_bundle_id: stamped {} cluster(s) with coarse "
+                   "bundle ids", nstamped);
     }
 }
 
@@ -4113,6 +4149,17 @@ bool MultiAlgBlobClustering::operator()(const input_pointer& ints, output_pointe
 
     perf.dump("start clustering", ensemble);
 
+    // Stamp the coarse flash-bundle id into perblob PCs BEFORE any visitor
+    // (including switch_scope and unmerge_bundle) sees the grouping.
+    // ClusteringSwitchScope carries matching_bundle_id via carry_anames;
+    // ClusteringUnmergeBundle carries it via Dataset::subset in carve().
+    // Both must preserve the field for TensorSetLabeler provenance to work.
+    if (m_stamp_matching_bundle_id) {
+        for (auto* grouping : ensemble.children()) {
+            stamp_matching_bundle_id(*grouping);
+        }
+    }
+
     // THE MAIN LOOP
     for (const auto& cmeth : m_pipeline) {
         cmeth.meth->visit(ensemble);
@@ -4350,6 +4397,31 @@ bool MultiAlgBlobClustering::operator()(const input_pointer& ints, output_pointe
             // the Bee fills so the pctree and the Bee zip carry the SAME ids
             // (doc 53).  See restamp_real_cluster_id(), called right after the
             // clustering pipeline.
+        }
+        // Key-homogeneity fill-in for matching_bundle_id: any cluster that has
+        // a "perblob" PC must carry the same column set for Dataset::append to
+        // succeed at serialization.  Clusters that did NOT go through
+        // stamp_matching_bundle_id (e.g. this is a non-PR MABC stage, or a
+        // cluster that was created after the stamp call) get a sentinel -1.
+        // The gate "has a perblob PC at all" is the same scope the
+        // real_cluster_was_main fill-in uses.
+        {
+            bool any_mbid = false;
+            for (Cluster* cluster : grouping.children()) {
+                if (cluster->has_pcarray<int>("matching_bundle_id", "perblob")) {
+                    any_mbid = true;
+                    break;
+                }
+            }
+            if (any_mbid) {
+                for (Cluster* cluster : grouping.children()) {
+                    const auto& lpcs = cluster->value().local_pcs();
+                    if (lpcs.find("perblob") == lpcs.end()) continue;
+                    if (cluster->has_pcarray<int>("matching_bundle_id", "perblob")) continue;
+                    cluster->put_pcarray(std::vector<int>(cluster->nchildren(), -1),
+                                         "matching_bundle_id", "perblob");
+                }
+            }
         }
         // "real_cluster_was_main" (doc pr/20 Part I P1) needs the same
         // key-homogeneity fill-in as the pair above, but is deliberately
